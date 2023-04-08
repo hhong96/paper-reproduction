@@ -127,3 +127,4 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+paper-02/experiment_metabric.ipynb
