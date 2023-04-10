@@ -1,37 +1,59 @@
-import numpy as np
+import os
+import sys
 import pandas as pd
+import numpy as np
 import pickle
-import argparse
-from sklearn.model_selection import train_test_split
 
-def read_data(filepath):
-    data = pd.read_csv(filepath)
-    return data
+# Set data directory
+DATA_DIR = 'data'
 
-def generate_features(data):
-    # Generate input features
-    pass
+def load_data_files():
+    patient = pd.read_csv(os.path.join(DATA_DIR, 'patient.csv'))
+    admissiondx = pd.read_csv(os.path.join(DATA_DIR, 'admissiondx.csv'))
+    diagnosis = pd.read_csv(os.path.join(DATA_DIR, 'diagnosis.csv'))
+    treatment = pd.read_csv(os.path.join(DATA_DIR, 'treatment.csv'))
+    return patient, admissiondx, diagnosis, treatment
 
-def split_data(data):
-    train_data, test_data = train_test_split(data, test_size=0.2, random_state=42)
-    train_data, val_data = train_test_split(train_data, test_size=0.2, random_state=42)
-    return train_data, val_data, test_data
+def preprocess_patient_data(patient):
+    patient = patient[['patientunitstayid', 'gender', 'age', 'ethnicity', 'unittype', 'unitadmitsource', 'unitvisitnumber','patienthealthsystemstayid','unitdischargestatus']]
+    return patient
 
-def save_preprocessed_data(output_dir, train_data, val_data, test_data):
-    with open(output_dir + '/train_data.pkl', 'wb') as f:
-        pickle.dump(train_data, f)
-    with open(output_dir + '/val_data.pkl', 'wb') as f:
-        pickle.dump(val_data, f)
-    with open(output_dir + '/test_data.pkl', 'wb') as f:
-        pickle.dump(test_data, f)
+def preprocess_admissiondx_data(admissiondx):
+    admissiondx = admissiondx[['patientunitstayid', 'admitdxpath']]
+    return admissiondx
+
+def preprocess_diagnosis_data(diagnosis):
+    diagnosis = diagnosis[['patientunitstayid', 'diagnosisstring','diagnosisid','icd9code']]
+    return diagnosis
+
+def preprocess_treatment_data(treatment):
+    treatment = treatment[['patientunitstayid', 'treatmentstring','treatmentid']]
+    return treatment
+
+def main():
+    # Load CSV data
+    patient, admissiondx, diagnosis, treatment = load_data_files()
+
+    # Preprocess data
+    patient = preprocess_patient_data(patient)
+    admissiondx = preprocess_admissiondx_data(admissiondx)
+    diagnosis = preprocess_diagnosis_data(diagnosis)
+    treatment = preprocess_treatment_data(treatment)
+
+    # Merge data
+    patient_admissiondx = pd.merge(patient, admissiondx, on='patientunitstayid', how='left')
+    patient_admissiondx_diagnosis = pd.merge(patient_admissiondx, diagnosis, on='patientunitstayid', how='left')
+    sample_fraction = 0.001  # Change this value to control the fraction of data you want to keep
+    patient_admissiondx_diagnosis_sample = patient_admissiondx_diagnosis.sample(frac=sample_fraction)
+    treatment_sample = treatment.sample(frac=sample_fraction)
+
+    patient_admissiondx_diagnosis_treatment = pd.merge(patient_admissiondx_diagnosis_sample, treatment_sample, on='patientunitstayid', how='left')
+
+    # Save preprocessed data
+    patient_admissiondx_diagnosis_treatment.to_csv(os.path.join(DATA_DIR, 'preprocessed_data.csv'), index=False)
+
+    print("Preprocessed data saved to:", os.path.join(DATA_DIR, 'preprocessed_data.csv'))
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--data', type=str, required=True)
-    parser.add_argument('--output_dir', type=str, required=True)
-    args = parser.parse_args()
+    main()
 
-    data = read_data(args.data)
-    features = generate_features(data)
-    train_data, val_data, test_data = split_data(features)
-    save_preprocessed_data(args.output_dir, train_data, val_data, test_data)
