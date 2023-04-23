@@ -133,3 +133,5 @@ dmypy.json
 
 *.csv
 *.npy
+
+paper-02/experiment_metabric.ipynb
