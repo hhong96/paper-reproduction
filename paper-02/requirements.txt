@@ -1,0 +1,9 @@
+easydict==1.10
+matplotlib==3.7.1
+numpy==1.23.5
+pandas==1.5.3
+pycox==0.2.3
+pytorch_pretrained_bert==0.6.2
+scikit_learn==1.2.1
+scikit_survival==0.0.0
+torch==2.0.0

@@ -1,20 +1,17 @@
-"""
-modeling_bert.py
-"""
-import math
+
 import torch
-from torch import Tensor, nn
-from typing import Callable, List, Optional, Set, Tuple
+from torch import Tensor, device, dtype, nn
+import pdb
+import math, os
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 import inspect
+import torch.nn.functional as F
 from config import STConfig
 
-
+"""
+Reference: Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. University of Illinois Urbana-Champaign
+"""
 class BaseModel(nn.Module):
-    """
-        References:
-        [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-        University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
     def __init__(self, config: STConfig, *inputs, **kwargs):
         super().__init__()
         # Save config and origin of the pretrained weights if given in model
@@ -25,8 +22,9 @@ class BaseModel(nn.Module):
         If needed prunes and maybe initializes weights.
         """
         # Prune heads if needed
-        # if self.config.pruned_heads:
-        #     self.prune_heads(self.config.pruned_heads)
+        if self.config.pruned_heads:
+            self.prune_heads(self.config.pruned_heads)
+
 
         # Initialize weights
         self.apply(self._init_weights)
@@ -208,11 +206,6 @@ class BaseModel(nn.Module):
 
 
 class BertEmbeddings(nn.Module):
-    """
-        References:
-        [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-        University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
     """Construct the embeddings from word, position and token_type embeddings."""
 
     def __init__(self, config):
@@ -239,11 +232,6 @@ class BertEmbeddings(nn.Module):
         return embeddings
 
 class BertSelfAttention(nn.Module):
-    """
-    References:
-    [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-    University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
     def __init__(self, config):
         super().__init__()
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
@@ -354,7 +342,6 @@ class BertSelfAttention(nn.Module):
 
         return outputs
 
-
 class BertSelfOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -368,14 +355,7 @@ class BertSelfOutput(nn.Module):
         hidden_states = self.LayerNorm(hidden_states + input_tensor)
         return hidden_states
 
-
 class BertAttention(nn.Module):
-    """
-    References:
-    [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-    University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
-
     def __init__(self, config):
         super().__init__()
         self.self = BertSelfAttention(config)
@@ -425,12 +405,6 @@ class BertAttention(nn.Module):
 
 
 class BertIntermediate(nn.Module):
-    """
-    References:
-    [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-    University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
-
     def __init__(self, config):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.intermediate_size)
@@ -450,12 +424,6 @@ class BertIntermediate(nn.Module):
 
 
 class BertOutput(nn.Module):
-    """
-    References:
-    [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-    University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
-        
     def __init__(self, config):
         super().__init__()
         self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
@@ -470,12 +438,6 @@ class BertOutput(nn.Module):
 
 
 class BertLayer(nn.Module):
-
-    """
-    References:
-    [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-    University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
     def __init__(self, config):
         super().__init__()
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
@@ -520,11 +482,6 @@ class BertLayer(nn.Module):
         return layer_output
 
 class DenseVanillaBlock(nn.Module):
-    """
-    References:
-    [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-    University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
     def __init__(self, in_features, out_features, bias=True, batch_norm=True, dropout=0., activation=nn.ReLU,
                  w_init_=lambda w: nn.init.kaiming_normal_(w, nonlinearity='relu')):
         super().__init__()
@@ -564,11 +521,6 @@ class BertCLS(nn.Module):
         return hidden_states
 
 class BertEncoder(nn.Module):
-    """
-    References:
-    [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-    University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -621,11 +573,6 @@ class BertEncoder(nn.Module):
 
 def prune_linear_layer(layer: nn.Linear, index: torch.LongTensor, dim: int = 0) -> nn.Linear:
     """
-    References:
-    [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-    University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
-    """
     Prune a linear layer to keep only entries in index.
 
     Used to remove heads.
@@ -661,11 +608,6 @@ def find_pruneable_heads_and_indices(
     heads: List[int], n_heads: int, head_size: int, already_pruned_heads: Set[int]
 ) -> Tuple[Set[int], torch.LongTensor]:
     """
-    References:
-    [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-    University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
-    """
     Finds the heads and their indices taking :obj:`already_pruned_heads` into account.
 
     Args:
@@ -690,11 +632,6 @@ def find_pruneable_heads_and_indices(
 def apply_chunking_to_forward(
     forward_fn: Callable[..., torch.Tensor], chunk_size: int, chunk_dim: int, *input_tensors
 ) -> torch.Tensor:
-    """
-    References:
-    [1] Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-    University of Illinois Urbana-Champaign. Retrieved March 2, 2023, from https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-    """
     """
     This function chunks the :obj:`input_tensors` into smaller input tensor parts of size :obj:`chunk_size` over the
     dimension :obj:`chunk_dim`. It then applies a layer :obj:`forward_fn` to each chunk independently to save memory.
