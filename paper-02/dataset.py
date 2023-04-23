@@ -1,72 +1,79 @@
-import pandas as pd
-import numpy as np
 from pycox.datasets import metabric
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.model_selection import train_test_split
-from config import STConfig
+import numpy as np
+import pandas as pd
+import torch
+from pycox.preprocessing.discretization import (make_cuts, IdxDiscUnknownC, _values_if_series,
+    DiscretizeUnknownC, Duration2Idx)
 import warnings
-from pycox.preprocessing.discretization import (IdxDiscUnknownC, _values_if_series, DiscretizeUnknownC, Duration2Idx)
-
-from itables import init_notebook_mode
-init_notebook_mode(all_interactive=True)
 
 
-warnings.filterwarnings("ignore")
-pd.set_option('display.max_columns', None)
+"""
+Reference: Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. University of Illinois Urbana-Champaign
+"""
+def load_data(config):
+    '''load data, return updated configuration.
+    '''
+    data = config['data']
+    horizons = config['horizons']
+    get_target = lambda df: (df['duration'].values, df['event'].values)
 
-
-def data_processing():
-    config = STConfig
+    # data processing, transform all continuous data to discrete
     df = metabric.read_df()
 
-    cols_cat = ["x4", "x5", "x6", "x7"]
-    cols_num = ['x0', 'x1', 'x2', 'x3', 'x8']
-    times = df[df["event"] == 1]["duration"].quantile([0.25, 0.5, 0.75], interpolation="nearest").tolist()
+    # evaluate the performance at the 25th, 50th and 75th event time quantile
+    times = np.quantile(df["duration"][df["event"]==1.0], horizons).tolist()
 
-    features = df[cols_cat]
-    nums = df[cols_num]
-    labels = df.drop(features, axis = 1).drop(nums, axis = 1)
+    cols_categorical = ["x4", "x5", "x6", "x7"]
+    cols_standardize = ['x0', 'x1', 'x2', 'x3', 'x8']
 
-    scaled_nums = StandardScaler().fit_transform(nums)
-    scaled_nums = pd.DataFrame(scaled_nums, index=nums.index, columns=nums.columns)
+    df_feat = df.drop(["duration","event"],axis=1)
+    df_feat_standardize = df_feat[cols_standardize] 
+    df_feat_standardize_disc = StandardScaler().fit_transform(df_feat_standardize)
+    df_feat_standardize_disc = pd.DataFrame(df_feat_standardize_disc, columns=cols_standardize)
 
-    num_features = 0
-    for idx, col in enumerate(cols_cat):
-        features[col] = LabelEncoder().fit_transform(features[col]) + num_features
-        num_features += len(features[col].drop_duplicates())
-
-    features = features.astype("Float64")
+    # must be categorical feature ahead of numerical features!
+    df_feat = pd.concat([df_feat[cols_categorical], df_feat_standardize_disc], axis=1)
     
-    df = features.merge(nums, how = "left", left_index=True, right_index=True)
-    # df = df.merge(labels, how="left", left_index=True, right_index=True)
+    vocab_size = 0
+    for _,feat in enumerate(cols_categorical):
+        df_feat[feat] = LabelEncoder().fit_transform(df_feat[feat]).astype(float) + vocab_size
+        vocab_size = df_feat[feat].max() + 1
+            
+    # get the largest duraiton time
+    max_duration_idx = df["duration"].argmax()
+    df_test = df_feat.drop(max_duration_idx).sample(frac=0.3)
+    df_train = df_feat.drop(df_test.index)
+    df_val = df_train.drop(max_duration_idx).sample(frac=0.1)
+    df_train = df_train.drop(df_val.index)
+
+    # assign cuts
+    labtrans = LabelTransform(cuts=np.array([df["duration"].min()]+times+[df["duration"].max()]))
+    labtrans.fit(*get_target(df.loc[df_train.index]))
+    y = labtrans.transform(*get_target(df)) # y = (discrete duration, event indicator)
+    df_y_train = pd.DataFrame({"duration": y[0][df_train.index], "event": y[1][df_train.index], "proportion": y[2][df_train.index]}, index=df_train.index)
+    df_y_val = pd.DataFrame({"duration": y[0][df_val.index], "event": y[1][df_val.index],  "proportion": y[2][df_val.index]}, index=df_val.index)
+    df_y_test = pd.DataFrame({"duration": df['duration'].loc[df_test.index], "event": df['event'].loc[df_test.index]})
     
-    xtrain, xtest, ytrain, ytest = train_test_split(df, labels, test_size = 0.2, train_size = 0.8, random_state = 1)
-    xtrain, xval, ytrain, yval = train_test_split(df, labels, test_size = 0.1, train_size = 0.9, random_state = 1)
 
-    times.insert(0, labels["duration"].min())
-    times.append(labels["duration"].max())
+    config['labtrans'] = labtrans
+    config['num_numerical_feature'] = int(len(cols_standardize))
+    config['num_categorical_feature'] = int(len(cols_categorical))
+    config['num_feature'] = int(len(df_train.columns))
+    config['vocab_size'] = int(vocab_size)
+    config['duration_index'] = labtrans.cuts
+    config['out_feature'] = int(labtrans.out_features)
+    
+    return df, df_train, df_y_train, df_test, df_y_test, df_val, df_y_val
 
-    lt = LabelTransform(cuts=times)
-    lt.fit(ytrain["duration"], ytrain["event"])
-    y = lt.transform(labels["duration"], labels["event"])
 
-    cols_label = ["duration", "event", "proportion"]
-    labels = pd.DataFrame({cols_label[0]: y[0], cols_label[1]: y[1], cols_label[2]: y[2]}, index=labels.index)
 
-    df = df.merge(labels, how="inner", left_index=True, right_index=True)
-    train = xtrain.merge(labels, how="inner", left_index=True, right_index=True)
-    val = xval.merge(labels, how="inner", left_index=True, right_index=True)
-    test = xtest.merge(labels, how="inner", left_index=True, right_index=True)
 
-    # xtrain = train[cols_cat + cols_num].astype("Float64")
-    ytrain = train[cols_label].astype("Float64")
-    # xval = val[cols_cat + cols_num].astype("Float64")
-    yval = val[cols_label].astype("Float64")
-    # xtest = test[cols_cat + cols_num].astype("Float64")
-    ytest = test[cols_label].astype("Float64")
-
-    return df, train, ytrain, test, ytest, val, yval
-
+def pad_col(input, val=0, where='end'):
+    if input.ndim != 2:
+        raise ValueError("Only works for 2-D tensors.")
+    pad = torch.zeros_like(input[:, :1]) + val
+    return torch.cat([input, pad] if where == 'end' else [pad, input], dim=1)
 
 
 
@@ -157,7 +164,3 @@ class LabelTransform:
         if self.cuts is None:
             raise ValueError("Need to call `fit` before this is accessible.")
         return len(self.cuts) - 1
-
-if __name__ == "__main__":
-    df, train, ytrain, test, ytest, val, yval = data_processing()
-

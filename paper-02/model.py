@@ -1,11 +1,22 @@
 import torch
 import numpy as np
+import pandas as pd
 import torch.nn.functional as F
 from modeling_bert import BaseModel, BertEmbeddings, BertEncoder, BertCLS
-from train_utils import pad_col
 
+def pad_col(input, val=0, where='end'):
+    if input.ndim != 2:
+        raise ValueError("Only works for 2-D tensors.")
+    pad = torch.zeros_like(input[:, :1]) + val
+    return torch.cat([input, pad] if where == 'end' else [pad, input], dim=1)
+
+
+"""
+Reference: Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. University of Illinois Urbana-Champaign
+"""
 class SurvTraceSingle(BaseModel):
-
+    '''survtrace used for single event survival analysis
+    '''
     def __init__(self, config):
         super().__init__(config)
         self.embeddings = BertEmbeddings(config)
@@ -13,31 +24,98 @@ class SurvTraceSingle(BaseModel):
         self.cls = BertCLS(config)
         self.config = config
         self.init_weights()
+        self.duration_index = config['duration_index']
+        self.use_gpu = False
 
-    def forward(self, input_ids, input_nums):
-        embedding_output = self.embeddings(input_ids=input_ids, input_x_num=input_nums)
+    @property
+    def duration_index(self):
+        """
+        Array of durations that defines the discrete times. This is used to set the index
+        of the DataFrame in `predict_surv_df`.
+        
+        Returns:
+            np.array -- Duration index.
+        """
+        return self._duration_index
+
+    @duration_index.setter
+    def duration_index(self, val):
+        self._duration_index = val
+
+    def get_input_embeddings(self):
+        return self.embeddings.word_embeddings
+
+    def set_input_embeddings(self, value):
+        self.embeddings.word_embeddings = value
+
+    def forward(
+        self,
+        input_ids=None,
+        input_nums=None,
+        attention_mask=None,
+        head_mask=None,
+        inputs_embeds=None,
+        output_attentions=None,
+        output_hidden_states=None,
+    ):
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+
+        if input_ids is not None and inputs_embeds is not None:
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+        elif input_ids is not None:
+            input_shape = input_ids.size()
+            batch_size, seq_length = input_shape
+        elif inputs_embeds is not None:
+            input_shape = inputs_embeds.size()[:-1]
+            batch_size, seq_length = input_shape
+        else:
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
+
+        device = input_ids.device if input_ids is not None else inputs_embeds.device
+
+        if attention_mask is None:
+            attention_mask = torch.ones(((batch_size, seq_length)), device=device)
+
+        head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
+
+        embedding_output = self.embeddings(
+            input_ids=input_ids,
+            input_x_num=input_nums,
+            inputs_embeds=inputs_embeds,
+        )
+
         encoder_outputs = self.encoder(embedding_output)
         sequence_output = encoder_outputs[1]
-        predict_logits = self.cls(encoder_outputs[0])
         
-        return sequence_output, predict_logits
+        # do pooling
+        # sequence_output = (encoder_outputs[1][-2] + encoder_outputs[1][-1]).mean(dim=1)
 
+        predict_logits = self.cls(encoder_outputs[0])
+
+        return sequence_output, predict_logits
 
     def predict(self, x_input, batch_size=None):
         if not isinstance(x_input, torch.Tensor):
             x_input_cat = x_input.iloc[:, :self.config.num_categorical_feature]
             x_input_num = x_input.iloc[:, self.config.num_categorical_feature:]
-            x_cat = torch.tensor(x_input_cat.values).long()
             x_num = torch.tensor(x_input_num.values).float()
+            x_cat = torch.tensor(x_input_cat.values).long()
         else:
             x_cat = x_input[:, :self.config.num_categorical_feature].long()
             x_num = x_input[:, self.config.num_categorical_feature:].float()
+        
+        if self.use_gpu:
+            x_num = x_num.cuda()
+            x_cat = x_cat.cuda()
 
         num_sample = len(x_num)
         self.eval()
         with torch.no_grad():
             if batch_size is None:
-                preds = self.forward(x_cat, x_num)[1]
+                    preds = self.forward(x_cat, x_num)[1]
             else:
                 preds = []
                 num_batch = int(np.ceil(num_sample / batch_size))
@@ -47,8 +125,24 @@ class SurvTraceSingle(BaseModel):
                     batch_pred = self.forward(batch_x_cat,batch_x_num)
                     preds.append(batch_pred[1])
                 preds = torch.cat(preds)
+        return preds
 
+    def predict_hazard(self, input_ids, batch_size=None):
+        preds = self.predict(input_ids, batch_size)
         hazard = F.softplus(preds)
         hazard = pad_col(hazard, where="start")
+        return hazard
+    
+    def predict_risk(self, input_ids, batch_size=None):
+        surv = self.predict_surv(input_ids, batch_size)
+        return 1- surv
+
+    def predict_surv(self, input_ids, batch_size=None, epsilon=1e-7):
+        hazard = self.predict_hazard(input_ids, batch_size)
+        # surv = (1 - hazard).add(epsilon).log().cumsum(1).exp()
         surv = hazard.cumsum(1).mul(-1).exp()
-        return preds, surv
+        return surv
+    
+    def predict_surv_df(self, input_ids, batch_size=None):
+        surv = self.predict_surv(input_ids, batch_size)
+        return pd.DataFrame(surv.to("cpu").numpy().T, self.duration_index)

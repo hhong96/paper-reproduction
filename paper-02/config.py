@@ -1,14 +1,5 @@
 from easydict import EasyDict
 
-
-"""
-References for the parameters
-# Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. 
-# University of Illinois Urbana-Champaign. https://experts.illinois.edu/en/publications/survtrace-transformers-for-survival-analysis-with-competing-event 
-
-"""
-
-
 STConfig = EasyDict(
     {
         'data': 'metabric', # dataset name, in 'metabric', 'support', or 'seer'
@@ -38,5 +29,7 @@ STConfig = EasyDict(
         'output_hidden_states': False, # no use 
         'tie_word_embeddings': True, # no use
         'pruned_heads': {}, # no use
+        'num_heads': 4,
+        'num_layers': 1,
     }
 )
