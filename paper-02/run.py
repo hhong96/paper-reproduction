@@ -5,6 +5,7 @@ from evaluate_utils import Evaluator
 from model import SurvTraceSingle
 from train_utils import Trainer
 from config import STConfig
+import pandas as pd
 
 
 hparams = {
@@ -31,8 +32,8 @@ train_loss, val_loss = trainer.fit((df_train, df_y_train), (df_val, df_y_val),
 
 # evaluate model
 evaluator = Evaluator(df)
-evaluator.evaluate(model, (df_test, df_y_test))
-
+metric_dict = evaluator.evaluate(model, (df_test, df_y_test))
+print(pd.DataFrame(metric_dict))
 
 plt.plot(train_loss, label='train')
 plt.plot(val_loss, label='val')

@@ -1,12 +1,8 @@
 
 from collections import defaultdict
-import pdb
 import os
-import math
 import numpy as np
 import torch
-from torch.optim import Optimizer
-from torch.nn.utils import clip_grad_norm_
 from torch import Tensor
 import torch.nn.functional as F
 from pytorch_pretrained_bert.optimization import BertAdam
@@ -22,32 +18,6 @@ def pad_col(input, val=0, where='end'):
 """
 Reference: Wang, Z., & Sun, J. (2022, August 7). Survtrace: Transformers for survival analysis with competing events. University of Illinois Urbana-Champaign
 """
-    
-############################
-# optimizer #
-############################
-
-def warmup_cosine(x, warmup=0.002):
-    if x < warmup:
-        return x/warmup
-    return 0.5 * (1.0 + math.cos(math.pi * x))
-
-def warmup_constant(x, warmup=0.002):
-    if x < warmup:
-        return x/warmup
-    return 1.0
-
-def warmup_linear(x, warmup=0.002):
-    if x < warmup:
-        return x/warmup
-    return 1.0 - x
-
-SCHEDULES = {
-    'warmup_cosine':warmup_cosine,
-    'warmup_constant':warmup_constant,
-    'warmup_linear':warmup_linear,
-}
-
 
 class NLLPCHazardLoss(torch.nn.Module):
     def __init__(self, reduction: str = 'mean') -> None:
@@ -84,14 +54,7 @@ class NLLPCHazardLoss(torch.nn.Module):
         sum_haz = haz.cumsum(1).gather(1, idx_durations).view(-1) 
         loss = - log_h_e.sub(scaled_h_e).sub(sum_haz)
 
-        if self.reduction == 'none':
-            return loss
-        elif self.reduction == 'mean':
-            return loss.mean()
-        elif self.reduction == 'sum':
-            return loss.sum()
-        else:
-            raise ValueError(f"Invalid reduction mode: {self.reduction}. Must be 'none', 'mean', or 'sum'.")
+        return loss.mean()
 
 
 
@@ -110,18 +73,12 @@ class Trainer:
         self.train_logs = defaultdict(list)
         self.get_target = lambda df: (df['duration'].values, df['event'].values)
         self.use_gpu = True if torch.cuda.is_available() else False
-        if self.use_gpu:
-            print('use pytorch-cuda for training.')
-            self.model.cuda()
-            self.model.use_gpu = True
-        else:
-            print('GPU not found! will use cpu for training!')
         ckpt_dir = os.path.dirname(model.config['checkpoint'])
         self.ckpt = model.config['checkpoint']
         if not os.path.exists(ckpt_dir):
             os.makedirs(ckpt_dir)
 
-    def train_single_event(self,
+    def fit(self, 
         train_set,
         val_set=None,
         batch_size=64,
@@ -131,19 +88,13 @@ class Trainer:
         val_batch_size=None,
         **kwargs,
         ):
-
         df_train, df_y_train = train_set
         durations_train, events_train = self.get_target(df_y_train)
 
-        if val_set is not None:
-            df_val, df_y_val = val_set
-            durations_val, events_val = self.get_target(df_y_val)
-            tensor_val = torch.tensor(val_set[0].values)
-            tensor_y_val = torch.tensor(val_set[1].values)
-        
-        if self.use_gpu:
-            tensor_val = tensor_val.cuda()
-            tensor_y_val = tensor_y_val.cuda()
+        df_val, df_y_val = val_set
+        durations_val, events_val = self.get_target(df_y_val)
+        tensor_val = torch.tensor(val_set[0].values)
+        tensor_y_val = torch.tensor(val_set[1].values)
 
         # assign no weight decay on these parameters
         no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -157,7 +108,6 @@ class Trainer:
             weight_decay_rate=weight_decay, 
             )
 
-
         num_train_batch = int(np.ceil(len(df_y_train) / batch_size))
         train_loss_list, val_loss_list = [], []
         for epoch in range(epochs):
@@ -168,9 +118,6 @@ class Trainer:
 
             tensor_train = torch.tensor(df_train.values)
             tensor_y_train = torch.tensor(df_y_train.values)
-            if self.use_gpu:
-                tensor_y_train = tensor_y_train.cuda()
-                tensor_train = tensor_train.cuda()
 
             for batch_idx in range(num_train_batch):
                 optimizer.zero_grad()
@@ -196,60 +143,13 @@ class Trainer:
 
             train_loss_list.append(epoch_loss / (batch_idx+1))
 
-            if val_set is not None:
-                self.model.eval()
-                with torch.no_grad():
-                    phi_val = self.model.predict(tensor_val, val_batch_size)
-                
-                val_loss = self.metrics[0](phi_val, tensor_y_val[:,0].long(), tensor_y_val[:,1].long(), tensor_y_val[:,2].float())
-                print("[Train-{}]: {}".format(epoch, epoch_loss))
-                print("[Val-{}]: {}".format(epoch, val_loss.item()))
-                val_loss_list.append(val_loss.item())
-            else:
-                print("[Train-{}]: {}".format(epoch, epoch_loss))
+            self.model.eval()
+            with torch.no_grad():
+                phi_val = self.model.predict(tensor_val, val_batch_size)
+            
+            val_loss = self.metrics[0](phi_val, tensor_y_val[:,0].long(), tensor_y_val[:,1].long(), tensor_y_val[:,2].float())
+            print("[Train-{}]: {}".format(epoch, epoch_loss))
+            print("[Val-{}]: {}".format(epoch, val_loss.item()))
+            val_loss_list.append(val_loss.item())
 
         return train_loss_list, val_loss_list
-
-    def fit(self, 
-        train_set,
-        val_set=None,
-        batch_size=64,
-        epochs=100,
-        learning_rate=1e-3,
-        weight_decay=0,
-        val_batch_size=None,
-        **kwargs,
-        ):
-        '''fit on the train_set, validate on val_set for early stop
-        params should have the following terms:
-        batch_size,
-        epochs,
-        optimizer,
-        metric,
-        '''
-        if self.model.config.num_event == 1:
-            return self.train_single_event(
-                    train_set=train_set,
-                    val_set=val_set,
-                    batch_size=batch_size,
-                    epochs=epochs,
-                    learning_rate=learning_rate,
-                    weight_decay=weight_decay,
-                    val_batch_size=val_batch_size,
-                    **kwargs,
-            )
-        
-        elif self.model.config.num_event > 1:
-            return self.train_multi_event(
-                    train_set=train_set,
-                    val_set=val_set,
-                    batch_size=batch_size,
-                    epochs=epochs,
-                    learning_rate=learning_rate,
-                    weight_decay=weight_decay,
-                    val_batch_size=val_batch_size,
-                    **kwargs,
-            )
-        
-        else:
-            raise ValueError
