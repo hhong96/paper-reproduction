@@ -115,6 +115,10 @@ class GCTModel(tf.keras.Model):
         x = tf.keras.layers.Flatten()(x) # Use this line instead of self.flatten(x)
         x = self.fc(x)
         return x
+    
+    @tf.function
+    def call_with_default_adj(self, inputs):
+        return self.call(inputs, self.default_adj_matrix)
 
 
 def load_preprocessed_data():

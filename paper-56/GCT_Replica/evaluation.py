@@ -1,35 +1,74 @@
-import torch
-from torch.utils.data import DataLoader, TensorDataset
-from model import GCTModel
-from utils import load_data, create_adj_matrix, accuracy, create_dataloader
+import tensorflow as tf
+import numpy as np
+import networkx as nx
+import pickle
+import sklearn.metrics as metrics
+from model import GraphConvolution, MultiHeadAttention, GCTModel
 
-def evaluate(model, dataloader, criterion):
-    model.eval()
-    running_loss = 0.0
-    running_acc = 0.0
-    with torch.no_grad():
-        for inputs, adj_matrix, labels in dataloader:
-            outputs = model(inputs, adj_matrix)
-            loss = criterion(outputs, labels)
+# Load the data
+feature_matrix = np.load("feature_matrix.npy")
+adj_matrix = np.load("adj_matrix.npy")
+labels = np.load("labels.npy", allow_pickle=True)
 
-            running_loss += loss.item() * inputs.size(0)
-            running_acc += accuracy(outputs, labels) * inputs.size(0)
-    return running_loss / len(dataloader.dataset), running_acc / len(dataloader.dataset)
+# Convert string labels to integers
+unique_labels = np.unique(labels)
+label_to_int = {label: i for i, label in enumerate(unique_labels)}
+int_labels = np.array([label_to_int[label] for label in labels])
 
-if __name__ == '__main__':
-    test_data = load_data('test_data.pkl')
-    test_adj_matrix = create_adj_matrix(test_data)
-    test_dataloader = create_dataloader(test_data, test_adj_matrix, test_labels, batch_size=16)
+with open("graph.gpickle", "rb") as f:
+    G = pickle.load(f)
 
-    in_features = ... # Determine based on input data
-    out_features = ... # Determine based on desired output
-    d_model = ... # Choose model dimension
-    nhead = ... # Choose number of attention heads
-    num_layers = ... # Choose number of layers
+indices = np.arange(feature_matrix.shape[0])
+np.random.shuffle(indices)
 
-    model = GCTModel(in_features, out_features, d_model, nhead, num_layers)
-    model.load_state_dict(torch.load('gct_model.pth'))
-    criterion = model.loss_function
+id_to_index_map = {node: idx for idx, node in enumerate(G.nodes)}
+index_to_id_map = {idx: node for idx, node in enumerate(G.nodes)}
 
-    test_loss, test_acc = evaluate(model, test_dataloader, criterion)
-    print(f'Test Loss: {test_loss:.4f}, Test Accuracy: {test_acc:.4f}')
+node_to_label_map = {index_to_id_map[index]: label for index, label in zip(range(len(int_labels)), int_labels)}
+
+valid_indices = [idx for idx in indices if index_to_id_map[idx] in node_to_label_map]
+
+# Split the dataset
+train_indices = valid_indices[:int(0.8 * len(valid_indices))]
+val_indices = valid_indices[int(0.8 * len(valid_indices)):int(0.9 * len(valid_indices))]
+test_indices = valid_indices[int(0.9 * len(valid_indices)):]
+
+test_nodes = [index_to_id_map[idx] for idx in test_indices]
+test_G = G.subgraph(test_nodes)
+test_adj_matrix = nx.adjacency_matrix(test_G).astype(np.float32).toarray()
+test_features = feature_matrix[test_indices].astype(np.float32)
+test_labels = np.array([node_to_label_map[node] for node in test_nodes])
+
+# Load the saved model
+num_classes = len(np.unique(int_labels))
+gcn_units = 64
+attn_heads = 8
+attn_head_dim = 64
+
+model = GCTModel(num_classes, gcn_units, attn_heads, attn_head_dim)
+# Create dummy inputs for model initialization
+dummy_features = np.zeros((1, feature_matrix.shape[1]), dtype=np.float32)
+dummy_adj_matrix = np.eye(1, dtype=np.float32)
+
+# Call the model with dummy inputs to create variables
+_ = model(dummy_features, dummy_adj_matrix)
+
+model.load_weights('trained_gct_model_weights.h5')
+
+# Evaluate the model on test data
+test_predictions = model(test_features, test_adj_matrix)
+
+# Get the predicted labels for the test set
+test_pred_labels = np.argmax(test_predictions, axis=1)
+
+# Calculate the test accuracy
+test_acc = metrics.accuracy_score(test_labels, test_pred_labels)
+print(f"Test Accuracy: {test_acc:.4f}")
+
+# Calculate the test AUCPR
+test_aucpr = metrics.average_precision_score(test_labels, test_pred_labels)
+print(f"Test AUCPR: {test_aucpr:.4f}")
+
+# Calculate the test AUROC
+test_auroc = metrics.roc_auc_score(test_labels, test_pred_labels)
+print(f"Test AUROC: {test_auroc:.4f}")
