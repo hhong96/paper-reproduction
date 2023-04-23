@@ -63,7 +63,10 @@ model = GCTModel(num_classes, gcn_units, attn_heads, attn_head_dim)
 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
               loss=tf.keras.losses.SparseCategoricalCrossentropy(),
               metrics=['accuracy'])
-
+@tf.function(input_signature=[tf.TensorSpec(shape=(None, None), dtype=tf.float32),
+                              tf.TensorSpec(shape=(None, None), dtype=tf.float32)])
+def serving_signature(features, adj_matrix):
+    return model(features, adj_matrix)
 # Train the model
 # Train the model
 # Train the model
@@ -172,3 +175,12 @@ plt.xlabel('Epochs')
 plt.ylabel('Loss')
 plt.legend()
 plt.show()
+
+#model.save('trained_gct_model')
+
+# Set the default adjacency matrix for the model
+model.default_adj_matrix = adj_matrix
+
+# Save the model
+model.save_weights('trained_gct_model_weights.h5')
+
